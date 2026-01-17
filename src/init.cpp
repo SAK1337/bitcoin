@@ -716,6 +716,12 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     hidden_args.emplace_back("-daemonwait");
 #endif
 
+#ifdef WIN32
+    argsman.AddArg("-install", "Install bitcoind as a Windows service (requires Administrator privileges)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-uninstall", "Uninstall the bitcoind Windows service (requires Administrator privileges)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-servicename=<name>", "Service name for Windows service installation (default: BitcoinCore)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+#endif
+
     // Add the hidden options
     argsman.AddHiddenArgs(hidden_args);
 }

@@ -302,6 +302,7 @@ if(BUILD_DAEMON)
   add_executable(bitcoind
     bitcoind.cpp
     init/bitcoind.cpp
+    $<$<BOOL:${WIN32}>:windows_service.cpp>
   )
   add_windows_resources(bitcoind bitcoind-res.rc)
   add_windows_application_manifest(bitcoind)
@@ -316,6 +317,7 @@ if(ENABLE_IPC AND BUILD_DAEMON)
   add_executable(bitcoin-node
     bitcoind.cpp
     init/bitcoin-node.cpp
+    $<$<BOOL:${WIN32}>:windows_service.cpp>
   )
   target_link_libraries(bitcoin-node
     core_interface

@@ -28,6 +28,10 @@
 #include <util/tokenpipe.h>
 #include <util/translation.h>
 
+#ifdef WIN32
+#include <windows_service.h>
+#endif
+
 #include <any>
 #include <functional>
 #include <optional>
@@ -230,7 +234,7 @@ static bool AppInit(NodeContext& node)
             }
             }
 #else
-            return InitError(Untranslated("-daemon is not supported on this operating system"));
+            return InitError(Untranslated("-daemon is not supported on Windows. Use 'bitcoind -install' to run as a Windows service."));
 #endif // HAVE_DECL_FORK
         }
         // Lock critical directories after daemonization
@@ -257,8 +261,97 @@ static bool AppInit(NodeContext& node)
     return fRet;
 }
 
+#ifdef WIN32
+/**
+ * Check for Windows service commands (-install, -uninstall) before full argument parsing.
+ * These need to be handled early, before the config file is read.
+ * @return 0 to continue normal startup, positive for success exit, negative for error exit
+ */
+static int HandleWindowsServiceCommands(int argc, char* argv[])
+{
+    bool do_install = false;
+    bool do_uninstall = false;
+    std::string service_name = windows_service::DEFAULT_SERVICE_NAME;
+    std::vector<std::string> service_args;
+
+    // Scan arguments for service commands
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+
+        if (arg == "-install" || arg == "--install") {
+            do_install = true;
+        } else if (arg == "-uninstall" || arg == "--uninstall") {
+            do_uninstall = true;
+        } else if (arg.rfind("-servicename=", 0) == 0) {
+            service_name = arg.substr(13);
+        } else if (arg.rfind("--servicename=", 0) == 0) {
+            service_name = arg.substr(14);
+        } else if (arg != "-daemon" && arg != "--daemon" &&
+                   arg != "-daemonwait" && arg != "--daemonwait") {
+            // Store other arguments for service (skip -daemon flags)
+            service_args.push_back(arg);
+        }
+    }
+
+    if (do_install && do_uninstall) {
+        tfm::format(std::cerr, "Error: Cannot use both -install and -uninstall.\n");
+        return -1;
+    }
+
+    if (do_install) {
+        return windows_service::InstallService(service_name, service_args) ? 1 : -1;
+    }
+
+    if (do_uninstall) {
+        return windows_service::UninstallService(service_name) ? 1 : -1;
+    }
+
+    return 0;  // Continue with normal startup
+}
+
+/**
+ * Entry point for running as a Windows service.
+ * This is called from ServiceMain after the service is started by SCM.
+ */
+static bool ServiceNodeMain(int argc, char* argv[])
+{
+    NodeContext node;
+    int exit_status;
+    std::unique_ptr<interfaces::Init> init = interfaces::MakeNodeInit(node, argc, argv, exit_status);
+    if (!init) {
+        return false;
+    }
+
+    SetupEnvironment();
+    noui_connect();
+    util::ThreadSetInternalName("init");
+
+    ArgsManager& args = *Assert(node.args);
+    if (!ParseArgs(node, argc, argv)) return false;
+    // Don't process help/version in service mode
+    // Skip ProcessInitCommands as we don't want help/version in service mode
+
+    // Start application
+    if (!AppInit(node) || !Assert(node.shutdown_signal)->wait()) {
+        node.exit_status = EXIT_FAILURE;
+    }
+    Interrupt(node);
+    Shutdown(node);
+
+    return node.exit_status == EXIT_SUCCESS;
+}
+#endif // WIN32
+
 MAIN_FUNCTION
 {
+#ifdef WIN32
+    // Handle Windows service commands first (before any other initialization)
+    int service_result = HandleWindowsServiceCommands(argc, argv);
+    if (service_result != 0) {
+        return service_result > 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+#endif
+
     NodeContext node;
     int exit_status;
     std::unique_ptr<interfaces::Init> init = interfaces::MakeNodeInit(node, argc, argv, exit_status);
@@ -272,6 +365,29 @@ MAIN_FUNCTION
     noui_connect();
 
     util::ThreadSetInternalName("init");
+
+#ifdef WIN32
+    // Try to run as a Windows service. This call will block if we're running
+    // as a service, and return false if we're running from console.
+    // We need to get the service name from arguments first.
+    std::string service_name = windows_service::DEFAULT_SERVICE_NAME;
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        if (arg.rfind("-servicename=", 0) == 0) {
+            service_name = arg.substr(13);
+        } else if (arg.rfind("--servicename=", 0) == 0) {
+            service_name = arg.substr(14);
+        }
+    }
+
+    // Create a temporary shutdown signal for service mode detection
+    util::SignalInterrupt temp_shutdown;
+    if (windows_service::RunAsService(service_name, ServiceNodeMain, &temp_shutdown)) {
+        // We were running as a service and it has now stopped
+        return EXIT_SUCCESS;
+    }
+    // Not running as a service, continue with normal console mode
+#endif
 
     // Interpret command line arguments
     ArgsManager& args = *Assert(node.args);
